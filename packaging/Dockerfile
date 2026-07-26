@@ -30,18 +30,28 @@ COPY . .
 # remains to load at runtime.
 RUN rm -f /usr/lib/libpcap.so*
 
-# The grep is the real check: if this ever links dynamically, every downstream
-# package silently gains a libpcap dependency, so fail the build instead.
+# This check is the real guarantee behind the packaging: if the binary ever
+# links dynamically, every downstream package silently gains a libpcap
+# dependency and the "installs anywhere" promise breaks.
+#
+# Both spellings are accepted because the two architectures differ. On x86_64
+# Rust emits a static-PIE and file(1) says "static-pie linked"; on aarch64 it
+# emits a plain static executable and file(1) says "statically linked". Only
+# matching the latter passes on arm64 and fails on amd64.
 RUN cargo build --release --locked \
  && file target/release/net-tui \
- && file target/release/net-tui | grep -q 'statically linked'
+ && file target/release/net-tui | grep -Eq 'statically linked|static-pie linked' \
+ && ! ldd target/release/net-tui 2>/dev/null | grep -q 'libpcap'
 
 # --- .deb, .rpm and tarball -------------------------------------------------
 # Packaged on Debian because cargo-deb expects dpkg's conventions to be around,
 # but the binary inside comes from the Alpine stage above.
 FROM rust:${RUST_VERSION}-bookworm AS packages
 
-RUN cargo install cargo-deb cargo-generate-rpm --locked
+# Not --locked: these tools' own lockfiles reference crates that have since
+# been yanked, and pinning to them turns an unrelated registry change into a
+# build failure. Our own build below is still --locked.
+RUN cargo install cargo-deb cargo-generate-rpm
 
 WORKDIR /src
 COPY . .
