@@ -146,8 +146,12 @@ pub fn validate_bpf(linktype: Linktype, bpf: &str) -> Result<(), String> {
     if bpf.trim().is_empty() {
         return Ok(());
     }
-    let mut dead = Capture::dead(linktype).map_err(|e| e.to_string())?;
-    dead.filter(bpf, true).map_err(friendly_error)
+    let dead = Capture::dead(linktype).map_err(|e| e.to_string())?;
+    // Compile only. `Capture::filter` would also call pcap_setfilter, which
+    // libpcap refuses on a dead handle ("A filter cannot be set on a
+    // pcap_open_dead pcap_t") — and compiling is the step that catches the
+    // syntax errors we want to report anyway.
+    dead.compile(bpf, true).map(|_| ()).map_err(friendly_error)
 }
 
 fn run(
@@ -240,4 +244,70 @@ fn friendly_error(err: pcap::Error) -> String {
         );
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These need no privileges: pcap_open_dead never touches a device, which
+    // is exactly why filter validation is done against it.
+
+    #[test]
+    fn well_formed_filters_are_accepted() {
+        for filter in [
+            "",
+            "   ",
+            "tcp",
+            "tcp port 443",
+            "host 10.0.0.1 and not port 22",
+            "src host 192.168.1.5 and dst port 53",
+            "not tcp and not udp and not icmp and not icmp6 and not arp",
+        ] {
+            assert!(
+                validate_bpf(Linktype::ETHERNET, filter).is_ok(),
+                "should accept {filter:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_filters_are_rejected_with_a_message() {
+        for filter in ["tcp porrt 443", "host", "and and", "port not-a-number"] {
+            let error = validate_bpf(Linktype::ETHERNET, filter)
+                .expect_err(&format!("should reject {filter:?}"));
+            assert!(!error.is_empty(), "empty message for {filter:?}");
+        }
+    }
+
+    #[test]
+    fn a_port_on_a_portless_protocol_is_rejected() {
+        // The filter builder catches this earlier with a clearer message, but
+        // the raw prompt relies on libpcap to say no.
+        assert!(validate_bpf(Linktype::ETHERNET, "arp and port 80").is_err());
+    }
+
+    #[test]
+    fn every_link_type_a_live_capture_can_report_compiles() {
+        // `App::linktype` comes from pcap_datalink on a live handle, so these
+        // are the values validation actually sees: Ethernet for real NICs,
+        // NULL/LOOP for loopback and utun on macOS, LINUX_SLL for the Linux
+        // "any" device.
+        for linktype in [
+            Linktype::ETHERNET,
+            Linktype::NULL,
+            Linktype::LOOP,
+            Linktype::IPV4,
+            Linktype::LINUX_SLL,
+        ] {
+            assert!(
+                validate_bpf(linktype, "tcp port 443").is_ok(),
+                "should compile for {linktype:?}"
+            );
+        }
+        // Linktype::RAW is 101, the LINKTYPE_ code used inside pcap files
+        // rather than a DLT libpcap will compile against — it is only ever
+        // reached when decoding, never when validating a filter.
+        assert!(validate_bpf(Linktype::RAW, "ip").is_err());
+    }
 }

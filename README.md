@@ -109,8 +109,8 @@ Grab the file for your architecture from the
 [latest release](https://github.com/badoss/net-tui/releases/latest):
 
 ```sh
-sudo apt install ./net-tui_0.1.0-1_amd64.deb     # Debian, Ubuntu
-sudo dnf install ./net-tui-0.1.0-1.x86_64.rpm    # Fedora, RHEL, Rocky, Alma
+sudo apt install ./net-tui_*_amd64.deb     # Debian, Ubuntu
+sudo dnf install ./net-tui-*.x86_64.rpm    # Fedora, RHEL, Rocky, Alma
 ```
 
 **One package covers every distribution.** The binary inside is statically

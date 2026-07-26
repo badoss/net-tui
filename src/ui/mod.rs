@@ -281,6 +281,48 @@ mod tests {
     }
 
     #[test]
+    fn applying_to_capture_sets_the_bpf_filter() {
+        // Regression: validation used to call pcap_setfilter on a dead handle,
+        // which libpcap refuses, so *every* apply to the capture target failed
+        // with "A filter cannot be set on a pcap_open_dead pcap_t" and no
+        // filter was ever installed.
+        let mut app = sample_app();
+        press(&mut app, &[KeyCode::Char('F')]);
+        type_text(&mut app, "58.8.7.80");
+        press(&mut app, &[KeyCode::Enter]);
+
+        assert!(
+            app.builder.is_none(),
+            "a valid spec should close the builder"
+        );
+        assert_eq!(app.bpf, "src host 58.8.7.80");
+        assert_eq!(app.capture_spec.source, "58.8.7.80");
+    }
+
+    #[test]
+    fn applying_to_capture_combines_every_field() {
+        let mut app = sample_app();
+        press(&mut app, &[KeyCode::Char('F')]);
+        type_text(&mut app, "58.8.7.80");
+        press(&mut app, &[KeyCode::Down]);
+        type_text(&mut app, "159.223.35.210");
+        // Protocol -> TCP, then the port field.
+        press(&mut app, &[KeyCode::Down, KeyCode::Right, KeyCode::Down]);
+        type_text(&mut app, "22");
+        press(&mut app, &[KeyCode::Enter]);
+
+        assert!(
+            app.builder.is_none(),
+            "{:?}",
+            app.toast.as_ref().map(|t| &t.text)
+        );
+        assert_eq!(
+            app.bpf,
+            "src host 58.8.7.80 and dst host 159.223.35.210 and tcp and port 22"
+        );
+    }
+
+    #[test]
     fn an_impossible_capture_spec_keeps_the_builder_open_with_the_reason() {
         let mut app = sample_app();
         press(&mut app, &[KeyCode::Char('F')]);
