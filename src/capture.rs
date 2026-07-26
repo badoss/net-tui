@@ -15,9 +15,18 @@ use crate::packet::{self, Packet};
 /// stalls the display instead of the kernel's BPF buffer.
 const CHANNEL_CAPACITY: usize = 8192;
 
-/// How long `next_packet` waits before returning so the loop can observe the
-/// stop flag. Also bounds how long shutdown takes.
+/// Read timeout handed to libpcap. Only some platforms honour it — see
+/// [`open`] — so it is a hint, not something the loop relies on.
 const POLL_TIMEOUT_MS: i32 = 200;
+
+/// Backoff bounds for the non-blocking read loop. The floor keeps latency low
+/// while traffic is flowing; the ceiling bounds idle wake-ups and, with them,
+/// how long stopping a capture can take.
+const IDLE_SLEEP_MIN: Duration = Duration::from_micros(250);
+const IDLE_SLEEP_MAX: Duration = Duration::from_millis(5);
+
+/// How long stopping waits for the reader thread before detaching it.
+const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -125,9 +134,17 @@ impl CaptureHandle {
         // The capture thread signs off with a blocking send. If the queue were
         // full at that moment and we simply joined, it would wait for room
         // that only this thread can free — so keep draining until it exits.
-        // Bounded by POLL_TIMEOUT_MS, the longest `next_packet` can block.
+        //
+        // The deadline is a backstop: this runs on the UI thread, so anything
+        // that stops the reader from noticing the flag would otherwise freeze
+        // the interface outright. Detaching instead leaves a thread that exits
+        // on its own once its read returns.
+        let deadline = Instant::now() + STOP_TIMEOUT;
         while !thread.is_finished() {
             while self.rx.try_recv().is_ok() {}
+            if Instant::now() >= deadline {
+                return;
+            }
             thread::sleep(Duration::from_millis(1));
         }
         let _ = thread.join();
@@ -176,10 +193,13 @@ fn run(
 
     let mut seq: u64 = 0;
     let mut last_stats = Instant::now();
+    let mut idle = IDLE_SLEEP_MIN;
 
     while !stop.load(Ordering::Relaxed) {
         match cap.next_packet() {
             Ok(raw) => {
+                // Traffic is flowing: keep reading without sleeping.
+                idle = IDLE_SLEEP_MIN;
                 seq += 1;
                 let decoded = packet::decode(seq, raw.header, raw.data, linktype);
                 match tx.try_send(CaptureEvent::Packet(Box::new(decoded))) {
@@ -190,7 +210,13 @@ fn run(
                     Err(TrySendError::Disconnected(_)) => return,
                 }
             }
-            Err(pcap::Error::TimeoutExpired) => {}
+            Err(pcap::Error::TimeoutExpired) => {
+                // Nothing buffered. Back off so an idle interface does not
+                // spin, staying well inside one UI frame so a burst is still
+                // picked up promptly.
+                thread::sleep(idle);
+                idle = (idle * 2).min(IDLE_SLEEP_MAX);
+            }
             Err(pcap::Error::NoMorePackets) => break,
             Err(err) => {
                 let _ = tx.send(CaptureEvent::Error(friendly_error(err)));
@@ -221,6 +247,13 @@ fn open(config: &CaptureConfig) -> Result<Capture<pcap::Active>, String> {
         .buffer_size(config.buffer_size)
         .timeout(POLL_TIMEOUT_MS)
         .open()
+        .map_err(friendly_error)?
+        // Non-blocking is not an optimisation, it is what makes stopping
+        // possible. libpcap documents the read timeout as unsupported on some
+        // platforms, and Linux is one of them: a blocking `next_packet` on a
+        // quiet interface never returns, so the reader thread cannot see the
+        // stop flag and the UI hangs waiting to join it.
+        .setnonblock()
         .map_err(friendly_error)?;
 
     if !config.bpf.trim().is_empty() {
