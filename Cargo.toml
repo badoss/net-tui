@@ -2,5 +2,87 @@
 name = "net-tui"
 version = "0.1.0"
 edition = "2024"
+description = "Terminal UI for live TCP/UDP traffic capture on local interfaces"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/badoss/net-tui"
+homepage = "https://github.com/badoss/net-tui"
+keywords = ["tui", "network", "pcap", "sniffer", "tcpdump"]
+categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+clap = { version = "4.6.4", features = ["derive"] }
+etherparse = "0.21.0"
+libc = "0.2.189"
+pcap = "2.4.0"
+ratatui = "0.30.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# --- Packaging -------------------------------------------------------------
+# Every artifact wraps the same statically linked musl binary, so none of them
+# depend on libpcap or even libc. That is what lets one .deb install on every
+# Debian and Ubuntu release: the package name for libpcap changed to
+# libpcap0.8t64 in Ubuntu 24.04's 64-bit time_t transition, and a dynamically
+# linked package would have to be built once per distribution to cope.
+#
+# The trade-off is that a libpcap security fix needs a net-tui rebuild rather
+# than arriving through `apt upgrade`.
+
+[package.metadata.deb]
+maintainer = "badoss <Thongrit@mfec.co.th>"
+copyright = "2026, badoss <Thongrit@mfec.co.th>"
+license-file = ["LICENSE", "0"]
+section = "net"
+priority = "optional"
+# Static binary: nothing to depend on. Left explicit so cargo-deb does not run
+# dpkg-shlibdeps and invent a libpcap dependency from the build container.
+depends = ""
+extended-description = """\
+net-tui is a terminal user interface for watching live TCP and UDP traffic on \
+local network interfaces. It decodes Ethernet, IPv4, IPv6, TCP, UDP, ICMP and \
+ARP, offers both libpcap capture filters and instant display filters, and can \
+export what is on screen to a pcap file.
+.
+Capturing requires elevated privileges. Run under sudo, or grant the binary \
+CAP_NET_RAW and CAP_NET_ADMIN — see /usr/share/doc/net-tui/README.md."""
+assets = [
+    ["target/release/net-tui", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/net-tui/README.md", "644"],
+    ["LICENSE", "usr/share/doc/net-tui/LICENSE", "644"],
+]
+maintainer-scripts = "packaging/debian"
+
+[package.metadata.generate-rpm]
+summary = "Terminal UI for live TCP/UDP traffic capture on local interfaces"
+# Same reasoning as the .deb: a static binary has no shared-library requires
+# to discover, and letting rpm guess would tie the package to the build image.
+auto-req = "no"
+assets = [
+    { source = "target/release/net-tui", dest = "/usr/bin/net-tui", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/net-tui/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/doc/net-tui/LICENSE", mode = "644", doc = true },
+]
+# Mirrors packaging/debian/postinst. Capabilities are described rather than
+# granted: CAP_NET_RAW would let every user on the host read network traffic,
+# which is the administrator's call, not the package's.
+post_install_script = """
+cat <<'EOF'
+
+net-tui installed. Capturing packets needs elevated privileges:
+
+  sudo net-tui
+
+To let a non-root user capture, grant the binary the capabilities instead
+(this allows any user on this system to read network traffic):
+
+  sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/net-tui
+
+EOF
+"""

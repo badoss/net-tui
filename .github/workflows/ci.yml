@@ -1,0 +1,117 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck -s sh install.sh packaging/debian/postinst
+      - run: sh -n install.sh
+      - run: ./install.sh --help
+
+  # Builds once and hands the artifacts to the install jobs below, so a
+  # packaging change is proven to install before it can reach a release.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build packages for amd64
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --file packaging/Dockerfile \
+            --target artifacts \
+            --output type=local,dest=dist \
+            .
+          ls -lh dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-amd64
+          path: dist/*
+          if-no-files-found: error
+
+  # The .deb carries a static binary specifically so one file covers every
+  # release, including Ubuntu 24.04 where libpcap0.8 was renamed to
+  # libpcap0.8t64. These jobs are what prove that claim.
+  install-deb:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [debian:11, debian:12, ubuntu:22.04, ubuntu:24.04]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-amd64
+          path: dist
+      - name: Install and run on ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD/dist:/dist" ${{ matrix.image }} sh -eux -c '
+            apt-get update -qq
+            apt-get install -y -qq /dist/*.deb
+            dpkg -s net-tui | grep -E "^(Package|Version|Depends)" || true
+            net-tui --version
+            net-tui --list >/dev/null
+          '
+
+  install-rpm:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [almalinux:8, almalinux:9, fedora:latest]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-amd64
+          path: dist
+      - name: Install and run on ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD/dist:/dist" ${{ matrix.image }} sh -eux -c '
+            if command -v dnf >/dev/null; then dnf install -y -q /dist/*.rpm
+            else yum install -y -q /dist/*.rpm; fi
+            rpm -qi net-tui | head -20
+            net-tui --version
+            net-tui --list >/dev/null
+          '
+
+  # Alpine has no glibc at all. If the binary runs here it has no runtime
+  # dependencies whatsoever, which is what the curl installer relies on.
+  install-static:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-amd64
+          path: dist
+      - name: Run the static binary on Alpine
+        run: |
+          mkdir -p extracted && tar -xzf dist/*.tar.gz -C extracted
+          docker run --rm -v "$PWD/extracted:/e" alpine:3.21 sh -eux -c '
+            bin=$(find /e -type f -name net-tui)
+            "$bin" --version
+            "$bin" --list >/dev/null
+          '

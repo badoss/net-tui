@@ -1,0 +1,114 @@
+name: release
+
+# Publishes .deb, .rpm and a static tarball for amd64 and arm64 whenever a
+# version tag is pushed. Each architecture builds on a runner of that same
+# architecture, so nothing is emulated.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (must already exist)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      # The tag drives the release name while Cargo.toml drives the filenames.
+      # If they disagree the release ships artifacts nobody asked for, so stop.
+      - name: Check the tag matches Cargo.toml
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          crate="v$(grep -m1 '^version *= *"' Cargo.toml | cut -d'"' -f2)"
+          echo "tag=$tag crate=$crate"
+          [ "$tag" = "$crate" ] || {
+            echo "::error::tag $tag does not match Cargo.toml version $crate"
+            exit 1
+          }
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Same Dockerfile developers can run locally, so CI cannot drift from it.
+      - name: Build packages
+        run: |
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            --file packaging/Dockerfile \
+            --target artifacts \
+            --output type=local,dest=dist \
+            .
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      # Native to this runner's architecture, so it also proves the arm64
+      # artifacts work rather than only the amd64 ones CI already covers.
+      - name: Verify the packages install
+        run: |
+          docker run --rm -v "$PWD/dist:/dist" ubuntu:24.04 sh -eux -c '
+            apt-get update -qq
+            apt-get install -y -qq /dist/*.deb
+            net-tui --version
+          '
+          docker run --rm -v "$PWD/dist:/dist" almalinux:9 sh -eux -c '
+            dnf install -y -q /dist/*.rpm
+            net-tui --version
+          '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          merge-multiple: true
+
+      # install.sh verifies downloads against this file, so it has to cover
+      # every artifact and be published alongside them.
+      - name: Generate checksums
+        working-directory: staged
+        run: |
+          sha256sum ./* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" staged/* \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag

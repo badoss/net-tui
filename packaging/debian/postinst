@@ -1,0 +1,22 @@
+#!/bin/sh
+# Deliberately does NOT grant capabilities automatically. CAP_NET_RAW lets any
+# user on the machine read traffic from every interface, which is a decision
+# for the administrator rather than the package. tcpdump ships the same way.
+set -e
+
+if [ "$1" = "configure" ]; then
+    cat <<'EOF'
+
+net-tui installed. Capturing packets needs elevated privileges:
+
+  sudo net-tui
+
+To let a non-root user capture, grant the binary the capabilities instead
+(this allows any user on this system to read network traffic):
+
+  sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/net-tui
+
+EOF
+fi
+
+exit 0
