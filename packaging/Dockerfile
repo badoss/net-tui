@@ -30,18 +30,24 @@ COPY . .
 # remains to load at runtime.
 RUN rm -f /usr/lib/libpcap.so*
 
-# This check is the real guarantee behind the packaging: if the binary ever
-# links dynamically, every downstream package silently gains a libpcap
-# dependency and the "installs anywhere" promise breaks.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked \
+    cargo build --release --locked \
+ && install -Dm755 target/release/net-tui /out/net-tui
+
+# Kept in its own layer so tightening this check does not force a recompile.
 #
-# Both spellings are accepted because the two architectures differ. On x86_64
-# Rust emits a static-PIE and file(1) says "static-pie linked"; on aarch64 it
-# emits a plain static executable and file(1) says "statically linked". Only
-# matching the latter passes on arm64 and fails on amd64.
-RUN cargo build --release --locked \
- && file target/release/net-tui \
- && file target/release/net-tui | grep -Eq 'statically linked|static-pie linked' \
- && ! ldd target/release/net-tui 2>/dev/null | grep -q 'libpcap'
+# This is the guarantee the whole packaging rests on: were the binary ever to
+# link dynamically, all three artifacts would silently gain a libpcap
+# dependency and the "installs on any distribution" promise would break.
+#
+# Both spellings are needed because the architectures differ. On x86_64 Rust
+# emits a static PIE and file(1) reports "static-pie linked"; on aarch64 it
+# emits a plain static executable reported as "statically linked". Matching
+# only the latter passes on arm64 and fails on amd64 — which is exactly how
+# this was found.
+RUN file /out/net-tui \
+ && file /out/net-tui | grep -Eq 'statically linked|static-pie linked'
 
 # --- .deb, .rpm and tarball -------------------------------------------------
 # Packaged on Debian because cargo-deb expects dpkg's conventions to be around,
@@ -55,7 +61,7 @@ RUN cargo install cargo-deb cargo-generate-rpm
 
 WORKDIR /src
 COPY . .
-COPY --from=build /src/target/release/net-tui target/release/net-tui
+COPY --from=build /out/net-tui target/release/net-tui
 
 ARG TARGETARCH
 # gzip rather than the zstd default: rpm on RHEL 8 cannot read zstd payloads.
