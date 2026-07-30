@@ -436,11 +436,17 @@ const SERVICES: &[(u16, &str)] = &[
     (27017, "MONGODB"),
 ];
 
-fn lookup_service(port: u16) -> Option<&'static str> {
+/// Well-known name for a port, if there is one. Shared with the ports screen so
+/// both views name a service the same way.
+pub fn service_for_port(port: u16) -> Option<&'static str> {
     SERVICES
         .binary_search_by_key(&port, |(p, _)| *p)
         .ok()
         .map(|i| SERVICES[i].1)
+}
+
+fn lookup_service(port: u16) -> Option<&'static str> {
+    service_for_port(port)
 }
 
 /// Names the conversation after whichever side is the well-known port. When

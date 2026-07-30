@@ -6,7 +6,24 @@ the decoded packets — without leaving the terminal.
 
 Built with [ratatui](https://ratatui.rs/) and libpcap.
 
+net-tui opens on a menu with two tools: live packet capture, and a view of
+what is listening on the machine.
+
 ## Features
+
+### Ports and services
+
+- **Every listening socket on the host**, TCP and UDP, IPv4 and IPv6, read
+  straight from `/proc` with no external commands and no extra dependencies.
+- **An exposure column** saying whether each port is reachable from anywhere,
+  from one network, or only from this machine. That is the question a list of
+  raw bind addresses makes you work out yourself, so it is a column and a
+  summary line instead.
+- **The process behind each port**, with its full command line and owning user,
+  plus how many connections are currently established to it.
+- Sorted most-exposed first, so what is worth noticing is at the top.
+
+### Packet capture
 
 - **Interface picker** listing every local device with its addresses and link
   state. Interfaces with a routable address sort first, so the one you want is
@@ -25,6 +42,25 @@ Built with [ratatui](https://ratatui.rs/) and libpcap.
 - **Export** the packets currently on screen to a `.pcap` file for Wireshark.
 
 ## Screenshots
+
+Ports and services:
+
+```
+┌ Ports and services ──────────────────────────────────────────────────────────────────────────┐
+│3 reachable from anywhere   1 on this network   1 local only                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Listening  5/5 ──────────────────────────────────────────────────────────────────────────────┐
+│Proto  Port    Service    Reachable from  Bound to        Conns  Process                      │
+│udp         53 DNS        anywhere        0.0.0.0             —  socat UDP-LISTEN:53  (3019)   │
+│tcp        443 HTTPS      anywhere        0.0.0.0             —  socat TCP-LISTEN:443  (3012)  │
+│tcp       8080 HTTP-ALT   anywhere        0.0.0.0             —  python3 -m http.server  (2998)│
+│tcp       3306 MYSQL      this network    172.17.0.2          —  socat TCP-LISTEN:3306  (3027) │
+│tcp       9000 —          local only      127.0.0.1           —  python3 -m http.server  (3005)│
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+ udp  0.0.0.0:53  reachable from anywhere  as root
+ socat UDP-LISTEN:53,fork /dev/null  (3019)
+ ↑/↓ move  / filter  r refresh  n clear filter  esc menu  ? help  q quit
+```
 
 Interface picker:
 
@@ -256,6 +292,36 @@ everything else on and off. `n` clears the display-side filters at once.
 
 ## Keys
 
+### Menu
+
+| Key | Action |
+|---|---|
+| `↑` `↓` / `k` `j` | Move between entries |
+| `enter` | Open the selected entry |
+| `1` `2` | Open an entry directly |
+| `q` / `esc` | Quit |
+
+### Ports and services
+
+| Key | Action |
+|---|---|
+| `↑` `↓` / `k` `j` | Move selection |
+| `PgUp` `PgDn` | Move a page |
+| `g` / `G` | First / last |
+| `/` | Filter by port, service, process, user or exposure |
+| `n` | Clear the filter |
+| `r` | Re-read `/proc` |
+| `esc` | Back to the menu |
+| `q` | Quit |
+
+This screen needs `/proc`, so it is Linux-only; it says so rather than showing
+an empty table elsewhere. Without root only your own processes can be matched to
+their sockets, and the rest show a dash instead of a command.
+
+Refreshing is explicit rather than periodic: attributing sockets to processes
+walks every process's file descriptors, which is too much work to repeat on a
+timer.
+
 ### Interface picker
 
 | Key | Action |
@@ -263,6 +329,7 @@ everything else on and off. `n` clears the display-side filters at once.
 | `↑` `↓` / `k` `j` | Move selection |
 | `enter` | Start capturing |
 | `/` | Search by name, description or address |
+| `esc` | Back to the menu |
 | `F` | Filter builder — source, destination, protocol, port |
 | `f` | Set the capture filter before starting |
 | `r` | Rescan interfaces |

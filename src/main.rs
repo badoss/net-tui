@@ -7,6 +7,7 @@ mod cli;
 mod filter;
 mod input;
 mod packet;
+mod sockets;
 mod ui;
 
 use std::io;

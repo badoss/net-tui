@@ -15,6 +15,7 @@ use crate::capture::{CaptureConfig, CaptureEvent, CaptureHandle, DriverStats, va
 use crate::filter::{FilterSpec, FilterTarget};
 use crate::input::LineInput;
 use crate::packet::{ALL_PROTOS, Packet, Proto};
+use crate::sockets::{self, Listener};
 
 /// Seconds of packets-per-second history kept for the header sparkline.
 const HISTORY_LEN: usize = 120;
@@ -27,8 +28,36 @@ const DRAIN_BUDGET: usize = 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
+    /// Entry point, unless an interface was named on the command line.
+    Menu,
     Devices,
     Monitor,
+    Ports,
+}
+
+/// What the opening menu offers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MenuItem {
+    Capture,
+    Ports,
+}
+
+pub const MENU_ITEMS: [MenuItem; 2] = [MenuItem::Capture, MenuItem::Ports];
+
+impl MenuItem {
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Capture => "Capture traffic",
+            Self::Ports => "Ports and services",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Capture => "Watch live packets on an interface, with filters and a hex view",
+            Self::Ports => "What is listening on this machine, and how exposed each port is",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -45,6 +74,7 @@ pub enum Prompt {
     Bpf,
     Display,
     SavePath,
+    PortSearch,
 }
 
 impl Prompt {
@@ -55,6 +85,7 @@ impl Prompt {
             Self::Bpf => "Capture filter (BPF)",
             Self::Display => "Display filter",
             Self::SavePath => "Save displayed packets to",
+            Self::PortSearch => "Find port, service or process",
         }
     }
 }
@@ -253,6 +284,16 @@ pub struct App {
     pub show_detail: bool,
     pub detail_scroll: u16,
 
+    /// Listening sockets, refreshed on demand rather than per frame — reading
+    /// them walks every process's file descriptors.
+    pub listeners: Vec<Listener>,
+    pub listeners_error: Option<String>,
+    pub ports_view: Vec<usize>,
+    pub ports_state: TableState,
+    pub ports_query: String,
+    pub ports_height: usize,
+    pub menu_index: usize,
+
     pub counters: Counters,
     pub toast: Option<Toast>,
     /// Rows the packet table last rendered, used for page-sized movement.
@@ -262,7 +303,7 @@ pub struct App {
 impl App {
     pub fn new(capacity: usize, snaplen: i32, promiscuous: bool) -> Self {
         let mut app = Self {
-            screen: Screen::Devices,
+            screen: Screen::Menu,
             focus: Focus::Table,
             prompt: Prompt::None,
             input: LineInput::default(),
@@ -292,6 +333,13 @@ impl App {
             paused: false,
             show_detail: false,
             detail_scroll: 0,
+            listeners: Vec::new(),
+            listeners_error: None,
+            ports_view: Vec::new(),
+            ports_state: TableState::default(),
+            ports_query: String::new(),
+            ports_height: 1,
+            menu_index: 0,
             counters: Counters::default(),
             toast: None,
             table_height: 1,
@@ -620,8 +668,10 @@ impl App {
         }
 
         match self.screen {
+            Screen::Menu => self.on_menu_key(key),
             Screen::Devices => self.on_devices_key(key),
             Screen::Monitor => self.on_monitor_key(key, ctrl),
+            Screen::Ports => self.on_ports_key(key),
         }
     }
 
@@ -629,12 +679,16 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 // Abandoning the display filter must also undo its live effect.
-                let was_display = self.prompt == Prompt::Display;
+                let prompt = self.prompt;
                 self.prompt = Prompt::None;
                 self.input.clear();
-                if was_display && !self.display_filter.is_empty() {
+                if prompt == Prompt::Display && !self.display_filter.is_empty() {
                     self.display_filter.clear();
                     self.rebuild_view();
+                }
+                if prompt == Prompt::PortSearch && !self.ports_query.is_empty() {
+                    self.ports_query.clear();
+                    self.rebuild_ports_view();
                 }
             }
             KeyCode::Enter => self.commit_prompt(),
@@ -678,6 +732,10 @@ impl App {
                 self.display_filter = self.input.value().to_lowercase();
                 self.rebuild_view();
             }
+            Prompt::PortSearch => {
+                self.ports_query = self.input.value().to_string();
+                self.rebuild_ports_view();
+            }
             _ => {}
         }
     }
@@ -690,7 +748,7 @@ impl App {
 
         match prompt {
             Prompt::None => {}
-            Prompt::DeviceSearch | Prompt::Display => {}
+            Prompt::DeviceSearch | Prompt::Display | Prompt::PortSearch => {}
             Prompt::Bpf => {
                 // Compile first so a typo reports an error instead of killing
                 // a working capture.
@@ -714,6 +772,62 @@ impl App {
     fn open_prompt(&mut self, prompt: Prompt, initial: &str) {
         self.prompt = prompt;
         self.input = LineInput::with_value(initial);
+    }
+
+    // ---- listening sockets -----------------------------------------------
+
+    /// Re-reads `/proc`. Deliberately explicit rather than periodic: attributing
+    /// sockets to processes walks every process's file descriptors, which is far
+    /// too much work to repeat per frame.
+    pub fn refresh_listeners(&mut self) {
+        match sockets::collect() {
+            Ok(listeners) => {
+                self.listeners = listeners;
+                self.listeners_error = None;
+            }
+            Err(message) => {
+                self.listeners.clear();
+                self.listeners_error = Some(message);
+            }
+        }
+        self.rebuild_ports_view();
+    }
+
+    fn rebuild_ports_view(&mut self) {
+        let query = self.ports_query.to_lowercase();
+        self.ports_view = self
+            .listeners
+            .iter()
+            .enumerate()
+            .filter(|(_, listener)| listener.matches(&query))
+            .map(|(index, _)| index)
+            .collect();
+
+        let selected = match self.ports_view.len() {
+            0 => None,
+            len => Some(self.ports_state.selected().unwrap_or(0).min(len - 1)),
+        };
+        self.ports_state.select(selected);
+    }
+
+    pub fn selected_listener(&self) -> Option<&Listener> {
+        let row = self.ports_state.selected()?;
+        self.ports_view.get(row).map(|&i| &self.listeners[i])
+    }
+
+    pub fn listener_at(&self, row: usize) -> Option<&Listener> {
+        self.ports_view.get(row).map(|&i| &self.listeners[i])
+    }
+
+    fn move_ports(&mut self, delta: isize) {
+        if self.ports_view.is_empty() {
+            self.ports_state.select(None);
+            return;
+        }
+        let last = self.ports_view.len() as isize - 1;
+        let current = self.ports_state.selected().unwrap_or(0) as isize;
+        self.ports_state
+            .select(Some(current.saturating_add(delta).clamp(0, last) as usize));
     }
 
     // ---- filter builder --------------------------------------------------
@@ -827,10 +941,76 @@ impl App {
         values
     }
 
+    fn activate_menu_item(&mut self) {
+        match MENU_ITEMS[self.menu_index] {
+            MenuItem::Capture => self.screen = Screen::Devices,
+            MenuItem::Ports => {
+                self.screen = Screen::Ports;
+                self.refresh_listeners();
+            }
+        }
+    }
+
+    fn on_menu_key(&mut self, key: KeyEvent) {
+        let last = MENU_ITEMS.len() - 1;
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_menu_item(),
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+                self.menu_index = (self.menu_index + 1).min(last);
+            }
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
+                self.menu_index = self.menu_index.saturating_sub(1);
+            }
+            // The number keys make the menu skippable once it is familiar.
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                let index = ch.to_digit(10).unwrap_or(0) as usize;
+                if (1..=MENU_ITEMS.len()).contains(&index) {
+                    self.menu_index = index - 1;
+                    self.activate_menu_item();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_ports_key(&mut self, key: KeyEvent) {
+        let page = self.ports_height.max(1) as isize;
+        match key.code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Esc => self.screen = Screen::Menu,
+            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('r') => {
+                self.refresh_listeners();
+                match &self.listeners_error {
+                    Some(_) => {}
+                    None => {
+                        let count = self.listeners.len();
+                        self.info(format!("{count} listening sockets"));
+                    }
+                }
+            }
+            KeyCode::Char('/') => self.open_prompt(Prompt::PortSearch, &self.ports_query.clone()),
+            KeyCode::Char('n') => {
+                self.ports_query.clear();
+                self.rebuild_ports_view();
+            }
+            KeyCode::Down | KeyCode::Char('j') => self.move_ports(1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_ports(-1),
+            KeyCode::PageDown => self.move_ports(page),
+            KeyCode::PageUp => self.move_ports(-page),
+            KeyCode::Home | KeyCode::Char('g') => self.move_ports(isize::MIN / 2),
+            KeyCode::End | KeyCode::Char('G') => self.move_ports(isize::MAX / 2),
+            _ => {}
+        }
+    }
+
     fn on_devices_key(&mut self, key: KeyEvent) {
         let len = self.device_view.len();
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Esc => self.screen = Screen::Menu,
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('r') => {
                 self.refresh_devices();

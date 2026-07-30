@@ -4,7 +4,9 @@ mod builder;
 mod detail;
 mod devices;
 mod help;
+mod menu;
 mod monitor;
+mod ports;
 pub mod theme;
 
 use ratatui::Frame;
@@ -17,8 +19,10 @@ use crate::app::{App, Prompt, Screen};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     match app.screen {
+        Screen::Menu => menu::draw(frame, app),
         Screen::Devices => devices::draw(frame, app),
         Screen::Monitor => monitor::draw(frame, app),
+        Screen::Ports => ports::draw(frame, app),
     }
     // The builder sits above the screen but below help, so `?` is always
     // reachable and always readable.

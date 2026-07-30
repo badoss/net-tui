@@ -35,6 +35,40 @@ const MONITOR_KEYS: &[Entry] = &[
     ("q / ctrl+c", "quit"),
 ];
 
+const MENU_KEYS: &[Entry] = &[
+    ("", "Menu"),
+    ("↑ ↓ / k j", "move between entries"),
+    ("enter", "open the selected entry"),
+    ("1 2", "open an entry directly"),
+    ("q / esc", "quit"),
+];
+
+const PORTS_KEYS: &[Entry] = &[
+    ("", "Ports and services"),
+    ("↑ ↓ / k j", "move selection"),
+    ("PgUp PgDn", "move a page"),
+    ("g / G", "first / last"),
+    ("/", "filter by port, service, process or exposure"),
+    ("n", "clear the filter"),
+    ("r", "re-read /proc"),
+    ("esc", "back to the menu"),
+    ("q", "quit"),
+    ("", ""),
+    ("", "Reachable from"),
+    (
+        "anywhere",
+        "bound to 0.0.0.0 or :: — any host that can route here",
+    ),
+    (
+        "this network",
+        "bound to one address, so only that interface's network",
+    ),
+    (
+        "local only",
+        "bound to loopback — nothing off this machine can connect",
+    ),
+];
+
 const DEVICE_KEYS: &[Entry] = &[
     ("", "Interfaces"),
     ("↑ ↓ / k j", "move selection"),
@@ -66,8 +100,10 @@ const FILTER_HELP: &[Entry] = &[
 
 pub fn draw(frame: &mut Frame, screen: Screen) {
     let keys = match screen {
+        Screen::Menu => MENU_KEYS,
         Screen::Devices => DEVICE_KEYS,
         Screen::Monitor => MONITOR_KEYS,
+        Screen::Ports => PORTS_KEYS,
     };
 
     let mut lines: Vec<Line> = keys.iter().map(entry_line).collect();
