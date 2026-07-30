@@ -544,6 +544,12 @@ impl App {
 
     // ---- feedback --------------------------------------------------------
 
+    /// Surfaces a startup message in the footer. Set before any capture starts,
+    /// so a failure to open the requested interface still takes precedence.
+    pub fn notice(&mut self, text: String) {
+        self.info(text);
+    }
+
     fn info(&mut self, text: String) {
         self.toast = Some(Toast {
             text,

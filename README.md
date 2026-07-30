@@ -174,6 +174,7 @@ net-tui [OPTIONS]
                            opens the picker.
   -f, --filter <BPF>       Capture filter in tcpdump syntax, e.g. "tcp port 443"
   -b, --buffer <N>         Packets held in memory [default: 5000]
+  -m, --memory <MB>        Memory budget for the buffer [default: 512]
   -s, --snaplen <BYTES>    Bytes captured per packet [default: 65535]
   -p, --promiscuous        Capture packets not addressed to this host
   -l, --list               Print the available interfaces and exit
@@ -296,6 +297,40 @@ for the focused field.
 
 `n` clears the display-side filters only. Clearing the capture filter would
 restart the capture and drop the buffer, so that stays an explicit action.
+
+## Memory
+
+Memory is bounded, not accumulated. Packets live in a fixed-size ring: once it
+is full, each new packet evicts the oldest, so a capture left running for hours
+uses the same memory as one left running for a minute.
+
+Measured on a sustained 500 packets/second capture, resident size climbed while
+the ring filled and then stopped moving:
+
+```
+  t=6s    12.5 MB    3,771 captured    3,771 held
+  t=12s   13.6 MB    6,734 captured    5,000 held   <- ring full, now recycling
+  t=48s   14.0 MB   23,400 captured    5,000 held
+  t=84s   14.0 MB   41,700 captured    5,000 held
+```
+
+Three limits produce that ceiling:
+
+- **`--buffer`** caps how many packets are retained (5,000 by default).
+- **A 4 KiB cap on the bytes kept per packet**, for the hex view. This holds
+  even at the default 65,535-byte snaplen, which is what bounds the worst case;
+  the detail pane marks any packet it applies to, and `w` writes only those
+  bytes to the pcap file.
+- **A bounded queue** between the capture thread and the display. If the
+  terminal cannot keep up, packets are dropped and counted rather than queued
+  without limit — that is the `ui` figure in the drop counter.
+
+**`--memory` is the limit that matters.** A retained packet costs up to about
+4.5 KiB, so a packet count that looks modest can be gigabytes: the old
+one-million-packet maximum worked out to roughly 4 GB. `--buffer` is now
+reduced to fit `--memory`, and net-tui says so on startup rather than being
+OOM-killed later. At the 512 MiB default that allows about 118,000 packets.
+The interface picker shows what the current setting costs.
 
 ## Reading the counters
 

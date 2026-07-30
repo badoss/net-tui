@@ -11,6 +11,17 @@ use pcap::Linktype;
 /// memory to `MAX_STORED_BYTES * <ring capacity>`.
 pub const MAX_STORED_BYTES: usize = 4096;
 
+/// Allowance for a packet's two owned strings, `info` and `search`. The longest
+/// summary the decoder produces is a TCP line with every flag and counter,
+/// which lands near 90 characters; `search` adds the endpoints and MACs on top.
+const STRING_ALLOWANCE: usize = 256;
+
+/// Worst-case heap footprint of one retained packet, used to size the ring
+/// against a memory budget. Derived from the type rather than written down, so
+/// it cannot drift as fields are added.
+pub const WORST_CASE_PACKET_BYTES: usize =
+    size_of::<Packet>() + MAX_STORED_BYTES + STRING_ALLOWANCE;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Proto {
     Tcp,

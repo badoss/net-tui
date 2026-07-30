@@ -8,6 +8,7 @@ use ratatui::widgets::{List, ListItem, Paragraph};
 
 use super::theme;
 use crate::app::{App, DeviceEntry};
+use crate::packet::WORST_CASE_PACKET_BYTES;
 
 const HINTS: &[(&str, &str)] = &[
     ("↑/↓", "select"),
@@ -47,6 +48,14 @@ fn draw_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Style::new().fg(theme::MUTED),
         ),
     ];
+    spans.push(Span::styled(
+        format!(
+            "   buffer {} pkts (≤{})",
+            app.capacity,
+            super::human_bytes((app.capacity * WORST_CASE_PACKET_BYTES) as u64)
+        ),
+        Style::new().fg(theme::MUTED),
+    ));
     if !app.bpf.is_empty() {
         spans.push(Span::styled("   bpf: ", Style::new().fg(theme::MUTED)));
         spans.push(Span::styled(app.bpf.clone(), Style::new().fg(theme::WARN)));

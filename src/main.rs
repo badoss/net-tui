@@ -26,7 +26,7 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(50);
 const INPUT_POLL: Duration = Duration::from_millis(10);
 
 fn main() -> Result<()> {
-    let args = Args::parse().validated();
+    let (args, notice) = Args::parse().validated();
 
     if args.list {
         return list_interfaces();
@@ -34,6 +34,11 @@ fn main() -> Result<()> {
 
     let mut app = App::new(args.buffer, args.snaplen, args.promiscuous);
     app.bpf = args.filter.clone();
+    if let Some(notice) = notice {
+        app.notice(notice);
+    }
+    // After the notice, so that failing to open the requested interface
+    // replaces it — an error the user must act on outranks a clamp report.
     if let Some(interface) = &args.interface {
         app.start_on_named_device(interface);
     }
